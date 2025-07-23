@@ -25,6 +25,8 @@ pub fn runInContainer(a: std.mem.Allocator, rootfs: std.fs.Dir) !void {
         const chroot_rc = nix.chroot(rootPathC);
         if (chroot_rc != 0) return error.ChrootFailed;
 
+        // mount overlay
+
         try runProcess(a);
     } else {
         std.debug.print("parent: forked child with pid: {}\n", .{pid});
