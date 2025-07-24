@@ -1,9 +1,16 @@
 const std = @import("std");
+const RegistryClient = @import("./RegistryClient.zig");
 
 a: std.mem.Allocator,
 dir: std.fs.Dir,
-upstream: []const u8 = "registry.docker.io",
-upstreamAuth: []const u8 = "auth.docker.io",
+registryClient: RegistryClient,
+
+pub fn init(a: std.mem.Allocator, rootDir: []const u8) !@This() {
+    const dir = try std.fs.openDirAbsolute(rootDir, .{});
+    return @This(){ .a = a, .dir = dir, .registryClient = RegistryClient{
+        .a = a,
+    } };
+}
 
 pub const VagueReference = struct {
     repo: []const u8,
@@ -16,23 +23,31 @@ pub const Frozen = struct {
     hash: []const u8,
 };
 
-/// Given a vague reference like ubuntu:latest, find a candidate for
-/// a frozen base image
-pub fn find(self: @This(), ref: VagueReference) !Frozen {
+fn getRepoDir(self: @This(), ref: VagueReference) !std.fs.Dir {
     const subPath = try std.fmt.allocPrint(self.a, "{s}/{s}", .{ ref.repo, ref.tag });
     defer self.a.free(subPath);
 
-    if (self.dir.openDir(subPath, .{})) |_| {
-        std.debug.print("dir exists: {s}\n", .{subPath});
-        try self.importLatest(ref);
-    } else |err| switch (err) {
-        error.FileNotFound => {
-            try self.dir.makePath(subPath);
-        },
-        else => {
-            return err;
-        },
-    }
+    return self.dir.openDir(subPath, .{}) catch |err| {
+        switch (err) {
+            error.FileNotFound => {
+                try self.dir.makePath(subPath);
+                return self.getRepoDir(ref);
+            },
+            else => {
+                return err;
+            },
+        }
+    };
+}
+
+/// Given a vague reference like ubuntu:latest, find a candidate for
+/// a frozen base image
+pub fn find(self: @This(), ref: VagueReference) !Frozen {
+    var repoDir = try self.getRepoDir(ref);
+    defer repoDir.close();
+
+    try self.importLatest(ref);
+
     return Frozen{
         .ref = ref,
         .hash = "",
@@ -40,50 +55,41 @@ pub fn find(self: @This(), ref: VagueReference) !Frozen {
 }
 
 fn importLatest(self: @This(), ref: VagueReference) !void {
-    const token = try self.getToken(ref);
-    std.debug.print("token: {s}\n", .{token});
-}
+    var repoDir = try self.getRepoDir(ref);
+    try repoDir.makePath("blobs/sha256");
 
-fn getToken(self: @This(), ref: VagueReference) ![]const u8 {
-    var client = std.http.Client{
-        .allocator = self.a,
-    };
-    const buf = try self.a.alloc(u8, 4096);
-    defer self.a.free(buf);
+    const token = try self.registryClient.getPullToken(ref.repo);
+    const manifest = try self.registryClient.getManifest(token, ref.repo, ref.tag);
 
-    const uriStr = try std.fmt.allocPrint(
-        self.a,
-        "https://{s}/token?service={s}&scope=repository:library/{s}:pull",
-        .{ self.upstreamAuth, self.upstream, ref.repo },
-    );
-    defer self.a.free(uriStr);
+    for (manifest.layers) |descriptor| {
+        const blobPath = try std.fs.path.join(
+            self.a,
+            &[_][]const u8{ "blobs", "sha256", descriptor.digest.value },
+        );
+        defer self.a.free(blobPath);
 
-    const uri = try std.Uri.parse(uriStr);
-    var req = try client.open(.GET, uri, .{
-        .server_header_buffer = buf,
-    });
-    defer req.deinit();
+        std.log.debug("downloading layer: {s}...", .{blobPath});
 
-    try req.send();
-    try req.finish();
-    try req.wait();
+        var file = try repoDir.createFile(blobPath, .{});
+        defer file.close();
 
-    const resBuf = try self.a.alloc(u8, 8192);
-    defer self.a.free(resBuf);
-
-    const read = try req.readAll(resBuf);
-
-    const parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        self.a,
-        resBuf[0..read],
-        .{},
-    );
-    defer parsed.deinit();
-
-    if (parsed.value.object.get("token")) |val| {
-        return try self.a.dupe(u8, val.string);
-    } else {
-        return error.TokenMissing;
+        try self.registryClient.downloadLayer(ref.repo, token, descriptor.digest.value, file);
     }
+
+    // Write config.json. We just save this as a file instead of a sha blob
+    var configFile = try repoDir.createFile("config.json", .{});
+    defer configFile.close();
+    try self.registryClient.downloadLayer(
+        ref.repo,
+        token,
+        manifest.config.digest.value,
+        configFile.writer(),
+    );
+
+    // Write manifest.json
+    var manFile = try repoDir.createFile("manifest.json", .{});
+    defer manFile.close();
+    try std.json.stringify(manifest, .{
+        .emit_null_optional_fields = false,
+    }, manFile.writer());
 }
