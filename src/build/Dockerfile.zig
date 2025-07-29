@@ -13,9 +13,9 @@ pub fn init(a: std.mem.Allocator) @This() {
 
 pub fn deinit(self: @This()) void {
     for (self.stages.items) |stage| {
+        self.a.free(stage.from.repo);
+        self.a.free(stage.from.tag);
         for (stage.steps.items) |step| {
-            self.a.free(stage.from.repo);
-            self.a.free(stage.from.tag);
             self.a.free(step.args);
         }
         stage.steps.deinit();
@@ -70,6 +70,7 @@ test "single stage" {
     const data =
         \\FROM ubuntu:latest
         \\RUN apt-get update
+        \\RUN echo hello
     ;
 
     var config = @This().init(std.testing.allocator);
@@ -82,6 +83,6 @@ test "single stage" {
     const stage = config.stages.getLast();
     try std.testing.expectEqualSlices(u8, "ubuntu", stage.from.repo);
     try std.testing.expectEqualSlices(u8, "latest", stage.from.tag);
-    try std.testing.expectEqual(1, stage.steps.items.len);
+    try std.testing.expectEqual(2, stage.steps.items.len);
     try std.testing.expect(stage.steps.getLast().kind == .run);
 }

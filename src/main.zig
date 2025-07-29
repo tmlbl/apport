@@ -98,10 +98,12 @@ pub fn main() !void {
         const container = try Container.init(std.heap.page_allocator, rootFsPath);
         std.log.debug("rootfs path: {s}", .{rootFsPath});
 
+        var stepNum: usize = 0;
         for (stage.steps.items) |step| {
             if (step.kind == .run) {
-                try container.runInContainer(step.args);
+                try container.runInContainer(stepNum, step.args);
             }
+            stepNum += 1;
         }
     }
 }

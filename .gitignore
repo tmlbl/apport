@@ -2,3 +2,4 @@
 zig-out/
 ./images/
 rootfs/
+apport.zon
