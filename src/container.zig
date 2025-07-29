@@ -68,7 +68,7 @@ fn runProcess(a: std.mem.Allocator, cmd: []const u8) !void {
     var env = std.process.EnvMap.init(a);
     defer env.deinit();
 
-    try env.put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    try env.put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games");
     try env.put("HOME", "/root");
 
     child.env_map = &env;
@@ -138,12 +138,12 @@ fn mountOverlayFs(self: @This(), stageNum: usize) !void {
 
     // Previous upper dirs become part of lower dir list
     if (stageNum > 0) {
-        var i: usize = 0;
-        while (i < stageNum) : (i += 1) {
+        var i: usize = stageNum;
+        while (i > 0) : (i -= 1) {
             const prevUpper = try std.fmt.allocPrint(
                 self.a,
                 "/tmp/apport-builds/{s}/upper-{d}",
-                .{ self.id, i },
+                .{ self.id, (i - 1) },
             );
 
             std.debug.print("appending {s}\n", .{prevUpper});
