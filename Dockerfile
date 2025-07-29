@@ -6,6 +6,6 @@ RUN echo "hello" > foo.txt
 
 RUN cp foo.txt bar.txt
 
-RUN apt-get update && apt-get install -y cowsay
+#RUN apt-get update && apt-get install -y cowsay
 
-RUN cowsay "Apport is amazing!"
+#RUN cowsay "Apport is amazing!"
