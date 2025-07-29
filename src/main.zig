@@ -2,7 +2,7 @@ const std = @import("std");
 const Config = @import("./build/Config.zig");
 const Provider = @import("./images/Provider.zig");
 const Dockerfile = @import("build/Dockerfile.zig");
-const container = @import("./container.zig");
+const Container = @import("./container.zig");
 
 fn parseDockerfile(a: std.mem.Allocator, path: []const u8) !Dockerfile {
     const cwd = std.fs.cwd();
@@ -95,11 +95,12 @@ pub fn main() !void {
         const rootFsPath = try provider.getRootFS(imageRef);
         defer std.heap.page_allocator.free(rootFsPath);
 
+        const container = try Container.init(std.heap.page_allocator, rootFsPath);
         std.log.debug("rootfs path: {s}", .{rootFsPath});
 
         for (stage.steps.items) |step| {
             if (step.kind == .run) {
-                try container.runInContainer(std.heap.page_allocator, rootFsPath, step.args);
+                try container.runInContainer(step.args);
             }
         }
     }
