@@ -2,8 +2,7 @@ const std = @import("std");
 const oci = @import("ocispec");
 
 const resolvConf =
-    \\nameserver 192.168.0.1
-    \\options edns0
+    \\nameserver 8.8.8.8
 ;
 
 fn makedev(major: u64, minor: u64) u64 {

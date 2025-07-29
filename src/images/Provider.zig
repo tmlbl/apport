@@ -24,6 +24,9 @@ pub fn getRootFS(self: @This(), ref: ImageRef) ![]u8 {
     repoDir.makeDir("rootfs") catch |err| {
         if (err != error.PathAlreadyExists) {
             return err;
+        } else {
+            // TODO: verify integrity of rootfs
+            return repoDir.realpathAlloc(self.a, "rootfs");
         }
     };
     const targetDir = try repoDir.openDir("rootfs", .{});
