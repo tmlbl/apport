@@ -1,5 +1,7 @@
 const std = @import("std");
 const RegistryClient = @import("./RegistryClient.zig");
+const ImageRef = @import("../build/Config.zig").ImageRef;
+const rootfs = @import("./rootfs.zig");
 
 a: std.mem.Allocator,
 dir: std.fs.Dir,
@@ -17,14 +19,21 @@ pub const VagueReference = struct {
     tag: []const u8,
 };
 
-/// Base image reference with a precise SHA tag
-pub const Frozen = struct {
-    ref: VagueReference,
-    hash: []const u8,
-};
+pub fn getRootFS(self: @This(), ref: ImageRef) ![]u8 {
+    const repoDir = try self.getRepoDir(ref);
+    repoDir.makeDir("rootfs") catch |err| {
+        if (err != error.PathAlreadyExists) {
+            return err;
+        }
+    };
+    const targetDir = try repoDir.openDir("rootfs", .{});
+    try rootfs.image2rootfs(self.a, repoDir, targetDir);
 
-fn getRepoDir(self: @This(), ref: VagueReference) !std.fs.Dir {
-    const subPath = try std.fmt.allocPrint(self.a, "{s}/{s}", .{ ref.repo, ref.tag });
+    return repoDir.realpathAlloc(self.a, "rootfs");
+}
+
+fn getRepoDir(self: @This(), ref: ImageRef) !std.fs.Dir {
+    const subPath = try std.fmt.allocPrint(self.a, "{s}/{s}/{s}", .{ ref.repo, ref.tag, ref.id });
     defer self.a.free(subPath);
 
     return self.dir.openDir(subPath, .{}) catch |err| {
@@ -40,22 +49,20 @@ fn getRepoDir(self: @This(), ref: VagueReference) !std.fs.Dir {
     };
 }
 
-/// Given a vague reference like ubuntu:latest, find a candidate for
-/// a frozen base image
-pub fn find(self: @This(), ref: VagueReference) !Frozen {
-    var repoDir = try self.getRepoDir(ref);
-    defer repoDir.close();
-
-    try self.importLatest(ref);
-
-    return Frozen{
-        .ref = ref,
-        .hash = "",
-    };
+fn getDateTag(self: @This()) ![]const u8 {
+    const time = std.time.timestamp();
+    return try std.fmt.allocPrint(self.a, "{d}", .{time});
 }
 
-fn importLatest(self: @This(), ref: VagueReference) !void {
-    var repoDir = try self.getRepoDir(ref);
+pub fn importLatest(self: @This(), ref: VagueReference) !ImageRef {
+    const dateTag = try self.getDateTag();
+    defer self.a.free(dateTag);
+
+    var repoDir = try self.getRepoDir(.{
+        .repo = ref.repo,
+        .tag = ref.tag,
+        .id = dateTag,
+    });
     try repoDir.makePath("blobs/sha256");
 
     const token = try self.registryClient.getPullToken(ref.repo);
@@ -92,4 +99,10 @@ fn importLatest(self: @This(), ref: VagueReference) !void {
     try std.json.stringify(manifest, .{
         .emit_null_optional_fields = false,
     }, manFile.writer());
+
+    return ImageRef{
+        .repo = ref.repo,
+        .tag = ref.tag,
+        .id = try self.a.dupe(u8, dateTag),
+    };
 }

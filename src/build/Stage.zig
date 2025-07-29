@@ -1,6 +1,11 @@
 const std = @import("std");
 
-from: []const u8,
+pub const Reference = struct {
+    repo: []const u8,
+    tag: []const u8,
+};
+
+from: Reference,
 steps: std.ArrayList(Step),
 
 pub const Step = struct {

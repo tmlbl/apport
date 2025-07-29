@@ -1,22 +1,18 @@
 const std = @import("std");
 const nix = std.os.linux;
 
-pub fn runInContainer(a: std.mem.Allocator, rootfs: std.fs.Dir) !void {
+pub fn runInContainer(a: std.mem.Allocator, rootFsPath: []const u8, cmd: []const u8) !void {
     const pid = nix.fork();
     const pidt: i32 = @intCast(pid);
 
     if (pid == 0) {
-        std.debug.print("child pid: {}\n", .{nix.getpid()});
-        const rootPath = try rootfs.realpathAlloc(a, ".");
-        defer a.free(rootPath);
-
-        const rootPathZ = try a.alloc(u8, rootPath.len + 1);
-        std.mem.copyForwards(u8, rootPathZ[0..rootPath.len], rootPath);
-        rootPathZ[rootPath.len] = 0; // null-terminate
+        const rootPathZ = try a.alloc(u8, rootFsPath.len + 1);
+        std.mem.copyForwards(u8, rootPathZ[0..rootFsPath.len], rootFsPath);
+        rootPathZ[rootFsPath.len] = 0; // null-terminate
 
         const rootPathC: [*:0]u8 = @ptrCast(rootPathZ.ptr);
 
-        std.debug.print("entering root: {s}\n", .{rootPath});
+        std.debug.print("entering root: {s}\n", .{rootFsPath});
         // chdir
         const chdir_rc = nix.chdir(rootPathC);
         if (chdir_rc != 0) return error.ChdirFailed;
@@ -27,7 +23,7 @@ pub fn runInContainer(a: std.mem.Allocator, rootfs: std.fs.Dir) !void {
 
         // mount overlay
 
-        try runProcess(a);
+        try runProcess(a, cmd);
     } else {
         std.debug.print("parent: forked child with pid: {}\n", .{pid});
         var status: u32 = 0;
@@ -36,11 +32,12 @@ pub fn runInContainer(a: std.mem.Allocator, rootfs: std.fs.Dir) !void {
     }
 }
 
-fn runProcess(a: std.mem.Allocator) !void {
+fn runProcess(a: std.mem.Allocator, cmd: []const u8) !void {
+    std.log.debug("running command: {s}", .{cmd});
     var child = std.process.Child.init(&[_][]const u8{
         "/bin/sh",
         "-c",
-        "apt-get update && apt-get install -y cowsay",
+        cmd,
     }, a);
 
     var env = std.process.EnvMap.init(a);

@@ -1,25 +1,106 @@
 const std = @import("std");
-const image = @import("./image.zig");
-const container = @import("./container.zig");
-const build = @import("./build/root.zig");
+const Config = @import("./build/Config.zig");
 const Provider = @import("./images/Provider.zig");
+const Dockerfile = @import("build/Dockerfile.zig");
+const container = @import("./container.zig");
 
-pub fn main() !void {
-    //    const imageDir = try std.fs.cwd().openDir("images", .{});
-    //const outputDir = try std.fs.cwd().openDir("rootfs", .{});
+fn parseDockerfile(a: std.mem.Allocator, path: []const u8) !Dockerfile {
+    const cwd = std.fs.cwd();
+    const dockerfileContents = try cwd.readFileAlloc(
+        a,
+        path,
+        4096,
+    );
+    defer a.free(dockerfileContents);
 
-    //try image.image2rootfs(std.heap.page_allocator, imageDir, outputDir);
+    var dockerfile = Dockerfile.init(a);
+    try dockerfile.parse(dockerfileContents);
+    return dockerfile;
+}
 
-    //try container.runInContainer(std.heap.page_allocator, outputDir);
+/// Initialize a build configuration from a Dockerfile. Import base images if needed.
+/// Write a complete configuration file with the results.
+pub fn initDockerfile() !std.fs.File {
+    var dockerfile = try parseDockerfile(std.heap.page_allocator, "./Dockerfile");
+    defer dockerfile.deinit();
+
     const provider = try Provider.init(
         std.heap.page_allocator,
         "/tmp/apport-rootfs",
     );
 
-    const frozen = try provider.find(.{
-        .repo = "ubuntu",
-        .tag = "latest",
-    });
+    var imageRefs = std.ArrayList(Config.ImageRef).init(std.heap.page_allocator);
+    defer imageRefs.deinit();
 
-    std.debug.print("frozen at: {s}\n", .{frozen.hash});
+    for (dockerfile.stages.items) |stage| {
+        const imageRef = try provider.importLatest(.{
+            .repo = stage.from.repo,
+            .tag = stage.from.tag,
+        });
+
+        try imageRefs.append(imageRef);
+
+        std.debug.print("frozen: {s}\n", .{imageRef.id});
+    }
+
+    const cwd = std.fs.cwd();
+    var configFile = try cwd.createFile("apport.zon", .{});
+    defer configFile.close();
+
+    const config = Config{
+        .images = imageRefs.items,
+    };
+
+    try std.zon.stringify.serialize(config, .{}, configFile.writer());
+
+    return cwd.openFile("apport.zon", .{});
+}
+
+pub fn main() !void {
+    const cwd = std.fs.cwd();
+
+    // Parse the Dockerfile
+    var dockerfile = try parseDockerfile(std.heap.page_allocator, "./Dockerfile");
+    defer dockerfile.deinit();
+
+    // Read or initialize config file
+    var file = cwd.openFile("apport.zon", .{}) catch |err| switch (err) {
+        error.FileNotFound => try initDockerfile(),
+        else => {
+            return err;
+        },
+    };
+    defer file.close();
+
+    const source_raw = try file.readToEndAlloc(std.heap.page_allocator, 8192);
+    defer std.heap.page_allocator.free(source_raw);
+
+    const source = try std.mem.concatWithSentinel(std.heap.page_allocator, u8, &.{source_raw}, 0);
+    defer std.heap.page_allocator.free(source);
+
+    const config = try std.zon.parse.fromSlice(Config, std.heap.page_allocator, source, null, .{});
+
+    // Execute build stages
+    const provider = try Provider.init(
+        std.heap.page_allocator,
+        "/tmp/apport-rootfs",
+    );
+
+    var i: usize = 0;
+    while (i < dockerfile.stages.items.len) : (i += 1) {
+        std.log.debug("executing stage: {d}", .{i});
+        const stage = dockerfile.stages.items[i];
+        const imageRef = config.images[i];
+
+        const rootFsPath = try provider.getRootFS(imageRef);
+        defer std.heap.page_allocator.free(rootFsPath);
+
+        std.log.debug("rootfs path: {s}", .{rootFsPath});
+
+        for (stage.steps.items) |step| {
+            if (step.kind == .run) {
+                try container.runInContainer(std.heap.page_allocator, rootFsPath, step.args);
+            }
+        }
+    }
 }

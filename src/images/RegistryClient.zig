@@ -149,8 +149,6 @@ pub fn downloadLayer(
             const location = req.response.location orelse
                 return error.MissingRedirectLocation;
 
-            std.debug.print("redirected: {s}\n", .{location});
-
             const redirectUri = try std.Uri.parse(location);
             var redirectReq = try client.open(.GET, redirectUri, .{
                 .server_header_buffer = buf,
@@ -172,16 +170,6 @@ pub fn downloadLayer(
             std.log.err("error response to blob download: {s}", .{body});
             return error.FailedStatus;
         },
-    }
-
-    // Stream the response body directly to the provided writer
-    var stream = req.reader();
-    var stream_buf: [8192]u8 = undefined;
-
-    while (true) {
-        const bytes_read = try stream.read(&stream_buf);
-        if (bytes_read == 0) break;
-        try writer.writeAll(stream_buf[0..bytes_read]);
     }
 }
 

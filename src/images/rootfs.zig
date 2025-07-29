@@ -1,15 +1,5 @@
 const std = @import("std");
-
-pub const Manifest = struct {
-    Config: []const u8,
-    RepoTags: []const []const u8,
-    Layers: []const []const u8,
-};
-
-const Link = struct {
-    link_name: []const u8,
-    file_name: []const u8,
-};
+const oci = @import("ocispec");
 
 const resolvConf =
     \\nameserver 192.168.0.1
@@ -29,32 +19,42 @@ pub fn image2rootfs(a: std.mem.Allocator, dir: std.fs.Dir, target: std.fs.Dir) !
     const manData = try manFile.readToEndAlloc(a, 8096);
     defer a.free(manData);
 
-    const parsed = try std.json.parseFromSlice([]const Manifest, a, manData, .{
+    const parsed = try std.json.parseFromSlice(oci.image.Manifest, a, manData, .{
         .ignore_unknown_fields = true,
     });
     defer parsed.deinit();
 
-    const manifest = parsed.value[0];
+    const manifest = parsed.value;
+
+    const blobDir = try dir.openDir("blobs/sha256", .{});
+
+    const targetPath = try target.realpathAlloc(a, ".");
+    defer a.free(targetPath);
 
     // Unpack layers to the target directory
-    for (manifest.Layers) |layer| {
-        std.debug.print("unpacking: {s}\n", .{layer});
-        const blob = try dir.openFile(layer, .{});
-        defer blob.close();
+    for (manifest.layers) |layer| {
+        std.debug.print("unpacking: {s}\n", .{layer.digest.value});
 
-        const fnBuf = try a.alloc(u8, 4096);
-        defer a.free(fnBuf);
-        const lnBuf = try a.alloc(u8, 4096);
-        defer a.free(lnBuf);
+        const blobPath = try blobDir.realpathAlloc(a, layer.digest.value);
+        defer a.free(blobPath);
 
-        var diag = std.tar.Diagnostics{
-            .allocator = a,
-        };
-        defer diag.deinit();
+        // Zig 0.14's std.tar works only with ustar format tar files.
+        // If you're seeing error.TarHeader due to octal parsing, your tar likely uses GNU/PAX extensions.
+        //var diag = std.tar.Diagnostics{
+        //    .allocator = a,
+        //};
+        //defer diag.deinit();
+        //try std.tar.pipeToFileSystem(target, blob.reader(), .{
+        //    .diagnostics = &diag,
+        //    .mode_mode = .ignore,
+        //});
 
-        try std.tar.pipeToFileSystem(target, blob.reader(), .{
-            .diagnostics = &diag,
-        });
+        var process = std.process.Child.init(&.{ "tar", "xf", blobPath }, a);
+        process.cwd = targetPath;
+        const result = try process.spawnAndWait();
+        if (result.Exited != 0) {
+            return error.TarFailed;
+        }
     }
 
     // Add resolv.conf
@@ -84,7 +84,9 @@ pub fn image2rootfs(a: std.mem.Allocator, dir: std.fs.Dir, target: std.fs.Dir) !
 
     const mode = 0o666 | std.os.linux.S.IFCHR;
     const dev: u32 = @intCast(makedev(1, 3));
-    if (std.os.linux.mknod(nullPathC, mode, dev) != 0) {
+    const result = std.os.linux.mknod(nullPathC, mode, dev);
+    if (result != 0) {
+        std.debug.print("mknod result: {d}\n", .{result});
         return error.MkNodFailed;
     }
 }
