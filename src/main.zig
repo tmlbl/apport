@@ -92,10 +92,10 @@ pub fn main() !void {
         const stage = dockerfile.stages.items[i];
         const imageRef = config.images[i];
 
-        const rootFsPath = try provider.getRootFS(imageRef);
-        defer std.heap.page_allocator.free(rootFsPath);
+        const imagePath = try provider.getImagePath(imageRef);
+        defer std.heap.page_allocator.free(imagePath);
 
-        const container = try Container.init(std.heap.page_allocator, stage, rootFsPath);
+        var container = try Container.init(std.heap.page_allocator, stage, imagePath);
         defer container.deinit();
 
         try container.run();

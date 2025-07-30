@@ -1,5 +1,6 @@
 const std = @import("std");
 const nix = std.os.linux;
+const oci = @import("ocispec");
 const random = @import("../util/random.zig");
 const Stage = @import("./Stage.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -7,26 +8,63 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 a: std.mem.Allocator,
 id: []const u8,
 stage: Stage,
-rootFsPath: []const u8,
+imagePath: []const u8,
+configuration: std.json.Parsed(oci.image.Configuration),
+manifest: std.json.Parsed(oci.image.Manifest),
+layers: std.ArrayList(oci.image.Descriptor),
 
-pub fn init(a: std.mem.Allocator, stage: Stage, rootFsPath: []const u8) !@This() {
-    const this = @This(){
+pub fn init(a: std.mem.Allocator, stage: Stage, imagePath: []const u8) !@This() {
+    // Load the image configuration
+    const imageDir = try std.fs.openDirAbsolute(imagePath, .{});
+    const configData = try imageDir.readFileAlloc(a, "config.json", 8192);
+    defer a.free(configData);
+    const parsedConfiguration = try std.json.parseFromSlice(
+        oci.image.Configuration,
+        a,
+        configData,
+        .{
+            .ignore_unknown_fields = true,
+        },
+    );
+
+    // Load the manifest
+    const manData = try imageDir.readFileAlloc(a, "manifest.json", 8192);
+    defer a.free(manData);
+    const parsedManifest = try std.json.parseFromSlice(
+        oci.image.Manifest,
+        a,
+        manData,
+        .{},
+    );
+
+    var this = @This(){
         .a = a,
         .id = try random.randomCharsAlloc(a, 13),
         .stage = stage,
-        .rootFsPath = try a.dupe(u8, rootFsPath),
+        .imagePath = try a.dupe(u8, imagePath),
+        .configuration = parsedConfiguration,
+        .manifest = parsedManifest,
+        .layers = std.ArrayList(oci.image.Descriptor).init(a),
     };
+
+    for (parsedManifest.value.layers) |descriptor| {
+        try this.layers.append(descriptor);
+    }
+
     try this.initOverlayFs();
     try std.fs.makeDirAbsolute(try this.resultDirPath());
     return this;
 }
 
 pub fn deinit(self: @This()) void {
+    self.configuration.deinit();
+    self.manifest.deinit();
     self.a.free(self.id);
-    self.a.free(self.rootFsPath);
+    self.a.free(self.imagePath);
+    self.layers.deinit();
 }
 
-pub fn run(self: @This()) !void {
+pub fn run(self: *@This()) !void {
     var i: usize = 0;
     while (i < self.stage.steps.items.len) : (i += 1) {
         const step = self.stage.steps.items[i];
@@ -36,9 +74,66 @@ pub fn run(self: @This()) !void {
             else => return error.NotImplemented,
         }
     }
+
+    try self.commitImage();
 }
 
-fn runInContainer(self: @This(), stageNum: usize, cmd: []const u8) !void {
+fn commitImage(self: *@This()) !void {
+    const resultDir = try std.fs.openDirAbsolute(try self.resultDirPath(), .{});
+
+    // Write configuration
+    const configuration = oci.image.Configuration{
+        .architecture = .Amd64,
+        .created = "doo",
+        .os = .Linux,
+        .rootfs = .{
+            .type = "layers",
+            .diff_ids = &.{},
+        },
+    };
+
+    const confData = try std.json.stringifyAlloc(self.a, configuration, .{
+        .emit_null_optional_fields = false,
+    });
+    defer self.a.free(confData);
+
+    var hash = Sha256.init(.{});
+    hash.update(confData);
+    const digest = try std.fmt.allocPrint(
+        self.a,
+        "{s}",
+        .{std.fmt.fmtSliceHexLower(&hash.finalResult())},
+    );
+    defer self.a.free(digest);
+
+    const blobsDir = try resultDir.openDir("blobs/sha256", .{});
+    const confFile = try blobsDir.createFile(digest, .{});
+    defer confFile.close();
+    try confFile.writeAll(confData);
+
+    const manifest = oci.image.Manifest{
+        .schemaVersion = 2,
+        .mediaType = .ImageManifest,
+        .config = oci.image.Descriptor{
+            .mediaType = .ImageConfig,
+            .digest = oci.image.Digest{
+                .algorithm = .Sha256,
+                .value = digest,
+            },
+            .size = confData.len,
+        },
+        .layers = self.layers.items,
+    };
+
+    const manFile = try resultDir.createFile("manifest.json", .{});
+    defer manFile.close();
+
+    try std.json.stringify(manifest, .{
+        .emit_null_optional_fields = false,
+    }, manFile.writer());
+}
+
+fn runInContainer(self: *@This(), stageNum: usize, cmd: []const u8) !void {
     try self.mountOverlayFs(stageNum);
     const merged = try self.mergedPath();
     defer self.a.free(merged);
@@ -71,7 +166,7 @@ fn runInContainer(self: @This(), stageNum: usize, cmd: []const u8) !void {
     }
 }
 
-fn commitLayer(self: @This(), stageNum: usize) !void {
+fn commitLayer(self: *@This(), stageNum: usize) !void {
     var layerDir = try std.fs.openDirAbsolute(try self.layerDirPath(stageNum), .{
         .iterate = true,
     });
@@ -91,8 +186,11 @@ fn commitLayer(self: @This(), stageNum: usize) !void {
     var walker = try layerDir.walk(self.a);
     defer walker.deinit();
 
+    const linkBuf = try self.a.alloc(u8, 1024);
+    defer self.a.free(linkBuf);
+
     while (try walker.next()) |entry| {
-        std.debug.print("adding entry: {s}\n", .{entry.path});
+        //std.debug.print("adding entry: {s}\n", .{entry.path});
         switch (entry.kind) {
             .directory => try tw.writeDir(entry.path, .{}),
             .file => {
@@ -104,6 +202,10 @@ fn commitLayer(self: @This(), stageNum: usize) !void {
                 try tw.writeFileStream(entry.path, stat.size, file.reader(), .{
                     .mode = @intCast(stat.mode),
                 });
+            },
+            .sym_link => {
+                const linkName = try entry.dir.readLink(entry.basename, linkBuf);
+                try tw.writeLink(entry.path, linkName, .{});
             },
             else => return error.UnsupportedEntryKind,
         }
@@ -123,27 +225,43 @@ fn commitLayer(self: @This(), stageNum: usize) !void {
     const readBuf = try self.a.alloc(u8, 4096);
     defer self.a.free(readBuf);
 
+    var size: usize = 0;
+
     while (true) {
         const read = try blobReader.read(readBuf);
         if (read > 0) {
             hash.update(readBuf[0..read]);
+            size += read;
         } else {
             break;
         }
     }
 
-    const digest = try std.fmt.allocPrint(self.a, "blobs/sha256/{s}", .{
+    const digest = try std.fmt.allocPrint(self.a, "{s}", .{
         std.fmt.fmtSliceHexLower(&hash.finalResult()),
     });
-    defer self.a.free(digest);
 
-    try resultDir.rename(blobPath, digest);
+    const newBlobPath = try std.fmt.allocPrint(self.a, "blobs/sha256/{s}", .{digest});
+    defer self.a.free(newBlobPath);
+
+    try resultDir.rename(blobPath, newBlobPath);
+
+    const descriptor = oci.image.Descriptor{
+        .mediaType = .ImageLayer,
+        .digest = oci.image.Digest{
+            .algorithm = .Sha256,
+            .value = digest,
+        },
+        .size = size,
+    };
+
+    try self.layers.append(descriptor);
 
     std.debug.print("committed: {s}\n", .{digest});
 }
 
 fn runProcess(a: std.mem.Allocator, cmd: []const u8) !void {
-    var child = std.process.Child.init(&[_][]const u8{
+    var child = std.process.Child.init(&.{
         "/bin/sh",
         "-c",
         cmd,
@@ -188,6 +306,12 @@ fn resultDirPath(self: @This()) ![]const u8 {
         "/tmp/apport-builds/{s}/result",
         .{self.id},
     );
+}
+
+fn rootFsPath(self: @This()) ![]const u8 {
+    return std.fs.path.join(self.a, &.{
+        self.imagePath, "rootfs",
+    });
 }
 
 fn unmountOverlayFs(self: @This()) !void {
@@ -240,7 +364,10 @@ fn mountOverlayFs(self: @This(), stageNum: usize) !void {
         }
     }
 
-    try lowerDirs.append(self.rootFsPath);
+    const rootFs = try self.rootFsPath();
+    defer self.a.free(rootFs);
+
+    try lowerDirs.append(rootFs);
 
     const lowerSlice = try lowerDirs.toOwnedSlice();
     defer self.a.free(lowerSlice);

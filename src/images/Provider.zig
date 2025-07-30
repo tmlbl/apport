@@ -19,7 +19,12 @@ pub const VagueReference = struct {
     tag: []const u8,
 };
 
-pub fn getRootFS(self: @This(), ref: ImageRef) ![]u8 {
+pub fn getImagePath(self: @This(), ref: ImageRef) ![]const u8 {
+    const dir = try self.getRepoDir(ref);
+    return dir.realpathAlloc(self.a, ".");
+}
+
+fn initRootFS(self: @This(), ref: ImageRef) !void {
     const repoDir = try self.getRepoDir(ref);
     repoDir.makeDir("rootfs") catch |err| {
         if (err != error.PathAlreadyExists) {
@@ -31,8 +36,6 @@ pub fn getRootFS(self: @This(), ref: ImageRef) ![]u8 {
     };
     const targetDir = try repoDir.openDir("rootfs", .{});
     try rootfs.image2rootfs(self.a, repoDir, targetDir);
-
-    return repoDir.realpathAlloc(self.a, "rootfs");
 }
 
 fn getRepoDir(self: @This(), ref: ImageRef) !std.fs.Dir {
