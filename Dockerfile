@@ -10,4 +10,4 @@ RUN apt-get update && apt-get install -y cowsay
 
 #RUN cowsay "Apport is amazing!"
 #
-RUN ln -s /bin/sh /bin/the-shell
+RUN ln -s /usr/games/cowsay /usr/bin/cowsay

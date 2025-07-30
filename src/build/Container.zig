@@ -2,6 +2,7 @@ const std = @import("std");
 const nix = std.os.linux;
 const oci = @import("ocispec");
 const random = @import("../util/random.zig");
+const date = @import("../util/date.zig");
 const Stage = @import("./Stage.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
@@ -62,6 +63,8 @@ pub fn deinit(self: @This()) void {
     self.a.free(self.id);
     self.a.free(self.imagePath);
     self.layers.deinit();
+
+    // TODO: delete temporary directories
 }
 
 pub fn run(self: *@This()) !void {
@@ -82,13 +85,25 @@ fn commitImage(self: *@This()) !void {
     const resultDir = try std.fs.openDirAbsolute(try self.resultDirPath(), .{});
 
     // Write configuration
+    const createdTag = try date.createdTimeAlloc(self.a);
+    defer self.a.free(createdTag);
+
+    // TODO: this can be done because we are not compressing layers. Once layers are gzipped or other,
+    // this will need to remain as the uncompressed tar sum
+    var diffIds = std.ArrayList([]const u8).init(self.a);
+    defer diffIds.deinit();
+
+    for (self.layers.items) |layer| {
+        try diffIds.append(try layer.digest.toString());
+    }
+
     const configuration = oci.image.Configuration{
         .architecture = .Amd64,
-        .created = "doo",
+        .created = createdTag,
         .os = .Linux,
         .rootfs = .{
             .type = "layers",
-            .diff_ids = &.{},
+            .diff_ids = diffIds.items,
         },
     };
 
