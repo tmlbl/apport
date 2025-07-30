@@ -2,6 +2,7 @@ const std = @import("std");
 const RegistryClient = @import("./RegistryClient.zig");
 const ImageRef = @import("../build/Config.zig").ImageRef;
 const rootfs = @import("./rootfs.zig");
+const date = @import("../util/date.zig");
 
 a: std.mem.Allocator,
 dir: std.fs.Dir,
@@ -31,7 +32,7 @@ fn initRootFS(self: @This(), ref: ImageRef) !void {
             return err;
         } else {
             // TODO: verify integrity of rootfs
-            return repoDir.realpathAlloc(self.a, "rootfs");
+            return;
         }
     };
     const targetDir = try repoDir.openDir("rootfs", .{});
@@ -55,13 +56,8 @@ fn getRepoDir(self: @This(), ref: ImageRef) !std.fs.Dir {
     };
 }
 
-fn getDateTag(self: @This()) ![]const u8 {
-    const time = std.time.timestamp();
-    return try std.fmt.allocPrint(self.a, "{d}", .{time});
-}
-
 pub fn importLatest(self: @This(), ref: VagueReference) !ImageRef {
-    const dateTag = try self.getDateTag();
+    const dateTag = try date.dateTagAlloc(self.a);
     defer self.a.free(dateTag);
 
     var repoDir = try self.getRepoDir(.{
@@ -106,9 +102,11 @@ pub fn importLatest(self: @This(), ref: VagueReference) !ImageRef {
         .emit_null_optional_fields = false,
     }, manFile.writer());
 
-    return ImageRef{
+    const imageRef = ImageRef{
         .repo = ref.repo,
         .tag = ref.tag,
         .id = try self.a.dupe(u8, dateTag),
     };
+    try self.initRootFS(imageRef);
+    return imageRef;
 }
