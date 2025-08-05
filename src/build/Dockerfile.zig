@@ -63,7 +63,9 @@ pub fn parse(self: *@This(), source: []const u8) !void {
         }
     }
 
-    try self.stages.append(stage);
+    if (stage.from.repo.len > 0) {
+        try self.stages.append(stage);
+    }
 }
 
 test "single stage" {

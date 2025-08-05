@@ -73,7 +73,7 @@ pub fn importLatest(self: @This(), ref: VagueReference) !ImageRef {
     for (manifest.layers) |descriptor| {
         const blobPath = try std.fs.path.join(
             self.a,
-            &[_][]const u8{ "blobs", "sha256", descriptor.digest.value },
+            &.{ "blobs", "sha256", descriptor.digest.value },
         );
         defer self.a.free(blobPath);
 

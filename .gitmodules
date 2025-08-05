@@ -1,3 +1,6 @@
 [submodule "third-party/oci-spec-zig"]
 	path = third-party/oci-spec-zig
 	url = https://github.com/navidys/oci-spec-zig.git
+[submodule "third-party/zinatra"]
+	path = third-party/zinatra
+	url = git@github.com:tmlbl/zinatra.git
