@@ -1,13 +1,14 @@
 const std = @import("std");
 const InitRequest = @import("../models/InitRequest.zig");
 const Config = @import("../build/Config.zig");
+const Progress = @import("./Progress.zig");
 
 const ApiClient = @This();
 
 a: std.mem.Allocator,
 apportHost: []const u8 = "http://localhost:3737",
 
-pub fn initProject(self: ApiClient, payload: InitRequest) !std.json.Parsed(Config) {
+pub fn initProject(self: ApiClient, payload: InitRequest) !void {
     var uri = try std.Uri.parse(self.apportHost);
 
     uri.path.percent_encoded = "/config";
@@ -41,8 +42,8 @@ pub fn initProject(self: ApiClient, payload: InitRequest) !std.json.Parsed(Confi
 
     switch (req.response.status) {
         .ok => {
-            const read = try req.readAll(buf);
-            return std.json.parseFromSlice(Config, self.a, buf[0..read], .{});
+            const ui = Progress.UI.init(req.reader(), buf);
+            try ui.update();
         },
         else => {
             std.debug.print("error response: {}\n", .{req.response.status});

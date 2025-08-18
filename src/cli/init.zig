@@ -15,12 +15,10 @@ pub fn initCmdFn(_: Cmd.Context) !void {
     );
     defer std.heap.page_allocator.free(contents);
 
-    const parsedConfig = try api.initProject(.{
+    try api.initProject(.{
         .dockerfileContents = contents,
         .projectName = "test",
     });
-    std.debug.print("got config\n", .{});
-    parsedConfig.deinit();
 }
 
 pub fn getInitCmd() !Cmd {

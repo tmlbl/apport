@@ -1,6 +1,8 @@
 const std = @import("std");
 const oci = @import("ocispec");
 
+const Progress = @import("../cli/Progress.zig");
+
 a: std.mem.Allocator,
 upstream: []const u8 = "registry.docker.io",
 upstreamAuth: []const u8 = "auth.docker.io",
@@ -110,6 +112,7 @@ pub fn downloadLayer(
     token: []const u8,
     sha: []const u8,
     writer: anytype, // expects a `std.io.Writer`
+    progressStream: std.io.AnyWriter,
 ) !void {
     var client = std.http.Client{
         .allocator = self.a,
@@ -162,7 +165,18 @@ pub fn downloadLayer(
             if (redirectReq.response.status != .ok)
                 return error.BadRedirect;
 
-            try streamToWriter(redirectReq.reader(), writer);
+            var copyProgress = CopyProgress{
+                .name = sha[0..15],
+                .readBuf = try self.a.alloc(u8, 8192),
+                .progressBuf = try self.a.alloc(u8, 8192),
+                .totalLength = redirectReq.response.content_length.?,
+            };
+
+            while (true) {
+                if (try doCopy(&copyProgress, redirectReq.reader(), writer, progressStream) == 0) {
+                    break;
+                }
+            }
         },
         else => {
             const body = try req.reader().readAllAlloc(self.a, 8192);
@@ -173,11 +187,40 @@ pub fn downloadLayer(
     }
 }
 
-fn streamToWriter(reader: anytype, writer: anytype) !void {
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        const n = try reader.read(&buf);
-        if (n == 0) break;
-        try writer.writeAll(buf[0..n]);
+/// Copies from reader to writer while providing progress updates
+const CopyProgress = struct {
+    name: []const u8,
+    readBuf: []u8,
+    progressBuf: []u8,
+    totalLength: u64,
+    written: u64 = 0,
+};
+
+pub fn doCopy(self: *CopyProgress, reader: anytype, writer: anytype, progressStream: anytype) !usize {
+    const read = try reader.read(self.readBuf);
+    if (read == 0) {
+        const progress = Progress.Update{
+            .name = self.name,
+            .percent = 100,
+            .complete = true,
+        };
+        try std.json.stringify(progress, .{}, progressStream);
+        try progressStream.writeByte('\n');
+        std.debug.print("sent final progress update\n", .{});
+        return 0;
     }
+    try writer.writeAll(self.readBuf[0..read]);
+    self.written += read;
+
+    const percent = (self.written * 100 / self.totalLength);
+
+    const progress = Progress.Update{
+        .name = self.name,
+        .percent = percent,
+    };
+
+    try std.json.stringify(progress, .{}, progressStream);
+    try progressStream.writeByte('\n');
+
+    return read;
 }

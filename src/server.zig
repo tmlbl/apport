@@ -42,20 +42,20 @@ fn createConfig(ctx: *zin.Context) !void {
 
     var imageRefs = std.ArrayList(Config.ImageRef).init(ctx.allocator());
 
+    const buf = try ctx.allocator().alloc(u8, 8192);
+
+    var resp = ctx.req.respondStreaming(.{
+        .send_buffer = buf,
+    });
+
     for (dockerfile.stages.items) |stage| {
         std.log.debug("importing image {s}:{s}...", .{ stage.from.repo, stage.from.tag });
         const imageRef = try provider.?.importLatest(.{
             .repo = stage.from.repo,
             .tag = stage.from.tag,
-        });
+        }, resp.writer());
         try imageRefs.append(imageRef);
     }
 
-    const config = Config{
-        .images = imageRefs.items,
-    };
-
-    std.log.debug("sending response", .{});
-
-    try ctx.json(.ok, config);
+    try resp.endChunked(.{});
 }

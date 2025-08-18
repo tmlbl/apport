@@ -56,7 +56,7 @@ fn getRepoDir(self: @This(), ref: ImageRef) !std.fs.Dir {
     };
 }
 
-pub fn importLatest(self: @This(), ref: VagueReference) !ImageRef {
+pub fn importLatest(self: @This(), ref: VagueReference, progressStream: std.io.AnyWriter) !ImageRef {
     const dateTag = try date.dateTagAlloc(self.a);
     defer self.a.free(dateTag);
 
@@ -82,7 +82,7 @@ pub fn importLatest(self: @This(), ref: VagueReference) !ImageRef {
         var file = try repoDir.createFile(blobPath, .{});
         defer file.close();
 
-        try self.registryClient.downloadLayer(ref.repo, token, descriptor.digest.value, file);
+        try self.registryClient.downloadLayer(ref.repo, token, descriptor.digest.value, file, progressStream);
     }
 
     // Write config.json. We just save this as a file instead of a sha blob
@@ -93,6 +93,7 @@ pub fn importLatest(self: @This(), ref: VagueReference) !ImageRef {
         token,
         manifest.config.digest.value,
         configFile.writer(),
+        progressStream,
     );
 
     // Write manifest.json
